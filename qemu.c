@@ -44,21 +44,19 @@ qemu_t *qemu_new(void) {
 }
 
 
-static void timespec_sub(struct timespec *r, const struct timespec *a,
-		const struct timespec *b) {
-	r->tv_sec = a->tv_sec - b->tv_sec;
-	r->tv_nsec = a->tv_nsec - b->tv_nsec;
-	if (r->tv_nsec < 0) {
-		r->tv_sec--;
-		r->tv_nsec += 1000000000;
-	}
+
+
+int qemu_poll(qemu_t *q) {
+
+   
 }
+
 
 int qemu_terminate(qemu_t *q) {
     int ret = 0;
     int status;
     struct pollfd pfd = { .fd = q->sock, .events = POLLIN };
-    sigset_t sigmask, oldmask;
+    sigset_t sigmask;
     struct timespec timeout = {.tv_nsec = 0, .tv_sec = 1};
 
     struct timespec start, now;
@@ -67,7 +65,7 @@ int qemu_terminate(qemu_t *q) {
     sigemptyset(&sigmask);
     sigaddset(&sigmask, SIGCHLD);
 
-    if (sigprocmask(SIG_BLOCK, &sigmask, &oldmask) < 0) {
+    if (sigprocmask(SIG_BLOCK, &sigmask, NULL) < 0) {
         un_log_errno(LOG_ERR, "failed to block SIGCHLD");
         return -errno;
     }
@@ -112,7 +110,7 @@ int qemu_terminate(qemu_t *q) {
             }
         }
     }
-    if (sigprocmask(SIG_SETMASK, &oldmask, NULL) < 0) {
+    if (sigprocmask(SIG_UNBLOCK, &sigmask, NULL) < 0) {
         un_log_errno(LOG_ERR, "failed to unblock SIGCHLD");
         return -errno;
     }
@@ -124,7 +122,7 @@ killkill:
     }
     q->pid = 0;
 
-    if (sigprocmask(SIG_SETMASK, &oldmask, NULL) < 0) {
+    if (sigprocmask(SIG_UNBLOCK, &sigmask, NULL) < 0) {
         un_log_errno(LOG_ERR, "failed to unblock SIGCHLD");
         return -errno;
     }
@@ -141,9 +139,8 @@ int qemu_initialize(qemu_t *q) {
     un_log(LOG_DEBUG, "initializing qemu");
     char *chardev;
     char *mon;
-    int sock[2];
+    int sock[2], fds[2];
     int ret = 0;
-
 
 
     if(!q->preconfig) {
@@ -153,19 +150,60 @@ int qemu_initialize(qemu_t *q) {
     if(!xsockpair(sock)) {
         return -1;
     }
-
+    if(!xnonblock(sock[0])) {
+        xclosepair(sock);
+        return -1;
+    }
     q->sock = sock[0];
 
+
+    if(pipe(fds) < 0) {
+        xclosepair(sock);
+        return -1;
+    }
+    if(!xnonblock(fds[0])) {
+        xclosepair(sock);
+        xclosepair(fds);
+        return -1;
+    }
+    q->stdout = pipebuf_new(fds[0]);
+    if(!q->stdout) {
+        xclosepair(sock);
+        xclosepair(fds);
+        return -1;
+    }
     mon = xaprintf(QMP_MON, "qmp0");
     chardev = xaprintf(QMP_CHARDEV_FD, "qmp0", sock[1]);
+
+    sigset_t sigmask;
+
+    sigemptyset(&sigmask);
+    sigaddset(&sigmask, SIGCHLD);
+
+    if (sigprocmask(SIG_BLOCK, &sigmask, &q->oldmask) < 0) {
+        un_log_errno(LOG_ERR, "failed to block SIGCHLD");
+        return -errno;
+    }
 
     un_log(LOG_DEBUG, "forking...");
     q->pid = fork();
     if(q->pid == 0) {
         int devnull = open("/dev/null", O_RDWR);
         dup2(devnull, STDIN_FILENO);
+        dup2(fds[1], STDOUT_FILENO);
+
         close(devnull); /* close /dev/null */
         close(sock[0]); /* close parent side of sockpair */
+        
+        /* close the pipe */
+        close(fds[0]);
+        close(fds[1]);
+
+        if(sigprocmask(SIG_BLOCK, &sigmask, NULL) < 0) {
+            un_log_errno(LOG_ERR, "failed to unblock SIGCHLD in child");
+            return -errno;
+        }
+
         char *argv[] = { "qemu-system-x86_64", "--preconfig", "-mon", mon, "-chardev", chardev, NULL };
         un_log(LOG_DEBUG, "executing %s with following args: ", argv[0]);
         if(un_log_enabled(LOG_DEBUG)) {
@@ -175,11 +213,11 @@ int qemu_initialize(qemu_t *q) {
         }
 
         execvp(argv[0], argv);
-
         un_log_errno(LOG_ERR, "failed to exec qemu");
         exit(1);
     } else if(q->pid > 0) {
         close(sock[1]); /* close child side of sockpair */
+        close(fds[1]); /* close write side of stdout pipe */
         ret = 0;
     } else {
         un_log_errno(LOG_ERR, "failed to fork");

@@ -4,14 +4,17 @@
 #include <stdbool.h>
 #include <unistd.h>
 
+#include "util.h"
+
 typedef struct qemu {
     int sock;
     pid_t pid;
+    sigset_t oldmask;
     bool sigterm;
+    pipebuf_t *stdout;
 
 
     bool preconfig;
-
 
 } qemu_t;
 
