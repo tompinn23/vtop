@@ -27,7 +27,7 @@ CFLAGS := -g -O0 -std=gnu11
 exe := vtop
 
 libs := jansson
-OBJS := main.o log.o net.o util.o qemu.o
+OBJS := main.o log.o net.o util.o client.o
 
 ## Arch specific
 
@@ -58,7 +58,7 @@ $O/%.o: %.c
 	$(CC) $(CFLAGS) $(lib_cflags) -MMD -c $< -o $@
 
 clean:
-	rm -fr $(OBJS)
+	rm -fr $(addprefix $O/, $(OBJS))
 	rm -f $(exe)
 
 

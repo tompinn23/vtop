@@ -2,6 +2,7 @@
 #include "net.h"
 #include "qemu.h"
 #include "util.h"
+#include "client.h"
 
 #include "jansson.h"
 
@@ -31,16 +32,6 @@ size_t net_readcb(void *buffer, size_t buflen, void *data) {
     }
 }
 
-static void timespec_sub(struct timespec *r, const struct timespec *a,
-		const struct timespec *b) {
-	r->tv_sec = a->tv_sec - b->tv_sec;
-	r->tv_nsec = a->tv_nsec - b->tv_nsec;
-	if (r->tv_nsec < 0) {
-		r->tv_sec--;
-		r->tv_nsec += 1000000000;
-	}
-}
-
 static sig_atomic_t child = 0;
 static sig_atomic_t term = 0;
 
@@ -55,79 +46,139 @@ static void sighandlechild(int sig) {
 int main(int argc, char **argv) {
     un_log(LOG_INFO, "starting up");
 
-    qemu_t *q = qemu_new();
-    qemu_initialize(q);
+    int sv = sv_open("unix:///tmp/vtop.sock");
+    if(sv < 0) {
+        un_log_err(LOG_ERR, -sv, "err opening socket");
+    }
 
-    char linebuf[4096];
+    xnonblock(sv);
+
+    if(listen(sv, 5) < 0) {
+        un_log_errno(LOG_ERR, "listen");
+        return -1;
+    }
+
+    struct pollfd *pfds = calloc(6, sizeof(struct pollfd));
+    pfds[0] = (struct pollfd){.fd = sv, .events = POLLIN};
+
+    client_t **clients = calloc(6, sizeof(client_t *));
+
+
     int ret = 0;
-    struct timespec timeout = {.tv_sec = 1, .tv_nsec = 0};
-    struct pollfd pfds[2];
-    sigset_t sigmask;
-    struct sigaction sa;
-
-    sigemptyset(&sigmask);
-    sigaddset(&sigmask, SIGCHLD);
-    sigaddset(&sigmask, SIGTERM);
-
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-
-    sa.sa_handler = sighandleterm;
-    if(sigaction(SIGTERM, &sa, NULL) == -1) {
-        un_log_errno(LOG_ERR, "signal: set TERM");
-        return -1;
-    }
-    sa.sa_handler = sighandlechild;
-    if(sigaction(SIGCHLD, &sa, NULL) == -1) {
-        un_log_errno(LOG_ERR, "signal: set CHILD");
-        return -1;
-    }
-
-    pfds[0] = (struct pollfd){ .fd = q->sock, .events = POLLIN };
-    pfds[1] = (struct pollfd){ .fd = q->stdout->fd, .events = POLLIN }; 
+    int npfds = 1;
+    int nclients = 0;
 
     for(;;) {
-        ret = ppoll(pfds, 2, &timeout, &sigmask);
+        ret = poll(pfds, npfds, -1);
         if(ret < 0) {
             if(errno != EINTR) {
                 un_log_errno(LOG_ERR, "ppoll()");
                 break;
             }
         }
-
-        for(int i = 0; i < ret; i++) {
-            if(pfds[i].fd == q->stdout->fd) {
-                char *p = pipebuf_readline(q->stdout, linebuf, sizeof(linebuf));
-                if(!p && q->stdout->status != EAGAIN) {
-                    un_log(LOG_ERR, "stdout err: %s", strerror(q->stdout->status));                    
-                } else if(p) {
-                    un_log(LOG_DEBUG, "qemu: %s", p);
+        for(int i = 0; i < npfds; i++) {
+            if(pfds[i].fd == sv && pfds[i].revents & POLLIN) {
+                int client = accept(sv, NULL, NULL);
+                if(client < 0) {
+                    un_log_errno(LOG_ERR, "accept");
+                    return 1;
                 }
-            } else if(pfds[i].fd == q->sock) {
-
+                clients[nclients++] = client_new(client);
+                pfds[npfds++] = (struct pollfd){.fd = client, .events = POLLOUT};
             }
-
-            if(term) {
-
-            }
-            else if(child) {
-                /* if we have recieved a sigchild and we are not exiting child */
-                if(!q->sigterm) {
-                    un_log(LOG_ERR, "child unexpectedly exited");
+            for(int x = 0; x < nclients; x++) {
+                if(clients[x] != NULL && pfds[i].fd == clients[x]->socket && (pfds[i].revents & POLLIN || pfds[i].revents & POLLOUT)) {
+                    int status = client_handshake(clients[x]);
+                    if(status == CLIENT_OK) {
+                        un_log(LOG_INFO, "client handshake");
+                    } else if(status == CLIENT_READ) {
+                        pfds[i].events = POLLIN;
+                    } else if(status == CLIENT_WRITE) {
+                        pfds[i].events = POLLOUT;
+                    } else {
+                        un_log(LOG_ERR, "client error");
+                        close(clients[x]->socket);
+                        free(clients[x]);
+                        clients[x] = NULL;
+                    }
                 }
-                ret = waitpid(q->pid, NULL, WNOHANG);
-                if(ret < 0) {
-                    un_log_errno(LOG_ERR, "waitpid: qemu");
-                } else if(ret > 0) {
-                    close(q->sock);
-                    q->sock = -1;
-                    pipebuf_destroy(q->stdout, 1);
-                    q->stdout = NULL;
-                    return -1;
-                }
-            }
+            }            
         }
+
     }
+
+
+    return 0;
+
+
+    // char linebuf[4096];
+    // int ret = 0;
+    // struct timespec timeout = {.tv_sec = 1, .tv_nsec = 0};
+    // struct pollfd pfds[2];
+    // sigset_t sigmask;
+    // struct sigaction sa;
+
+    // sigemptyset(&sigmask);
+    // sigaddset(&sigmask, SIGCHLD);
+    // sigaddset(&sigmask, SIGTERM);
+
+    // sigemptyset(&sa.sa_mask);
+    // sa.sa_flags = SA_RESTART;
+
+    // sa.sa_handler = sighandleterm;
+    // if(sigaction(SIGTERM, &sa, NULL) == -1) {
+    //     un_log_errno(LOG_ERR, "signal: set TERM");
+    //     return -1;
+    // }
+    // sa.sa_handler = sighandlechild;
+    // if(sigaction(SIGCHLD, &sa, NULL) == -1) {
+    //     un_log_errno(LOG_ERR, "signal: set CHILD");
+    //     return -1;
+    // }
+
+
+    // for(;;) {
+    //     ret = ppoll(pfds, 2, &timeout, &sigmask);
+    //     if(ret < 0) {
+    //         if(errno != EINTR) {
+    //             un_log_errno(LOG_ERR, "ppoll()");
+    //             break;
+    //         }
+    //     }
+
+    //     for(int i = 0; i < ret; i++) {
+    //         if(pfds[i].fd == q->stdout->fd) {
+    //             char *p = pipebuf_readline(q->stdout, linebuf, sizeof(linebuf));
+    //             if(!p && q->stdout->status != EAGAIN) {
+    //                 un_log(LOG_ERR, "stdout err: %s", strerror(q->stdout->status));                    
+    //             } else if(p) {
+    //                 un_log(LOG_DEBUG, "qemu: %s", p);
+    //             }
+    //         } else if(pfds[i].fd == q->sock) {
+
+    //         }
+
+    //         if(term) {
+
+    //         }
+    //         else if(child) {
+    //             /* if we have recieved a sigchild and we are not exiting child */
+    //             if(!q->sigterm) {
+    //                 un_log(LOG_ERR, "child unexpectedly exited");
+    //             }
+    //             ret = waitpid(q->pid, NULL, WNOHANG);
+    //             if(ret < 0) {
+    //                 un_log_errno(LOG_ERR, "waitpid: qemu");
+    //             } else if(ret > 0) {
+    //                 close(q->sock);
+    //                 q->sock = -1;
+    //                 pipebuf_destroy(q->stdout, 1);
+    //                 q->stdout = NULL;
+    //                 return -1;
+    //             }
+    //         }
+    //     }
+    // }
 
     return 0;
 }

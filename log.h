@@ -33,3 +33,5 @@ bool un_log_enabled(enum un_log_mode mode);
 #define un_log(mode, fmt, ...) _un_log(mode, "[%s:%d] " fmt, UN_FILENAME, __LINE__, ##__VA_ARGS__)
 #define un_vlog(mode, fmt, args) _un_vlog("[%s:%d] " fmt, UN_FILENAME, __LINE__, args)
 #define un_log_errno(mode, fmt, ...) _un_log(mode, "[%s:%d] " fmt ": %s", UN_FILENAME, __LINE__, ##__VA_ARGS__, strerror(errno))
+
+#define un_log_err(mode, err, fmt, ...) _un_log(mode, "[%s:%d] " fmt ": %s", UN_FILENAME, __LINE__, ##__VA_ARGS__, strerror(err))

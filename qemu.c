@@ -44,14 +44,6 @@ qemu_t *qemu_new(void) {
 }
 
 
-
-
-int qemu_poll(qemu_t *q) {
-
-   
-}
-
-
 int qemu_terminate(qemu_t *q) {
     int ret = 0;
     int status;
@@ -166,7 +158,7 @@ int qemu_initialize(qemu_t *q) {
         xclosepair(fds);
         return -1;
     }
-    q->stdout = pipebuf_new(fds[0]);
+    q->stdout = fdbuf_new(fds[0], 1);
     if(!q->stdout) {
         xclosepair(sock);
         xclosepair(fds);

@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include "util.h"
 
@@ -11,8 +12,7 @@ typedef struct qemu {
     pid_t pid;
     sigset_t oldmask;
     bool sigterm;
-    pipebuf_t *stdout;
-
+    fdbuf_t *stdout;
 
     bool preconfig;
 
