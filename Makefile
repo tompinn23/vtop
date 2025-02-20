@@ -8,7 +8,7 @@ CFLAGS := -g -O0 -std=gnu11
 exe := vtop
 
 libs := jansson
-OBJS := main.o util.o log.o vtop.o
+OBJS := main.o util.o log.o vtop.o proto.o
 
 ## Computed Variables
 

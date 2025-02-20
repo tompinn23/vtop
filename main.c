@@ -1,6 +1,8 @@
 #include "log.h"
 #include "util.h"
 
+#include "vtop.h"
+
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
@@ -138,7 +140,5 @@ int main(int argc, char **argv) {
 
     int fd = sv_open("tcp://127.0.0.1:8080", 1);
 
-    for(;;) {
-        
-    }
+    run_loop(fd);
 }

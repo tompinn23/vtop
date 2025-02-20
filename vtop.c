@@ -2,7 +2,9 @@
 #include "vtop.h"
 
 #include "log.h"
-
+#include "util.h"
+#include "proto.h"
+#include "client.h"
 
 #include <stdlib.h>
 #include <sys/poll.h>
@@ -20,7 +22,9 @@ volatile sig_atomic_t term = 0;
 
 struct fd_data {
     int type;
+    iobuf_t *iobuf;
     union {
+      struct client *client;
     };
 };
 
@@ -62,8 +66,11 @@ static void fdmap_resize(loop *loop, int fd) {
     loop->fdmapsz = fd + 1;
 }
 
-static void fdmap_setclient(loop *loop, int fd) {
-
+static void fdmap_setclient(loop *loop, int fd, struct iobuf *iobuf, struct client *c) {
+  fdmap_resize(loop, fd);
+  struct fd_data *data = &loop->fdmap[fd];
+  data->type = API_CLIENT;
+  data->iobuf = iobuf;
 }
 
 /* Allocate or dynamically resize our poll fds array.  */
@@ -174,9 +181,11 @@ int run_loop(int sv) {
     sigaddset(&sigset, SIGCHLD);
     sigprocmask(SIG_BLOCK, &sigset, NULL);
 
+
 init:
     term = child = 0;
     loop = calloc(1, sizeof(*loop));
+    loop->accepting = 1;
 
     pollfds_add(loop, sv, POLLIN);
 
@@ -223,9 +232,13 @@ pollagain:
             un_log_errno(LOG_ERR, "accept: new connection");
             goto out;
         }
-
-        
+        struct iobuf *buf = iobuf_createfd(8192, client);
+        struct client *client = client_new();
+        fdmap_setclient(loop, client, buf, client);
+        client_process(client, buf, CLIENT_WRITE);
     }
+
+    goto pollagain;
 
 
 
