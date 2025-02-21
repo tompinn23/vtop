@@ -159,7 +159,7 @@ int run_loop(int sv) {
     struct loop *loop;
     sigset_t sigset, pollset;
     struct sigaction sa;
-    int ret;
+    int ret, rc;
 
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
@@ -224,18 +224,23 @@ pollagain:
             goto pollagain;
         }
 
-        int client = accept(sv, NULL, NULL);
-        if(client < 0) {
+        int fd = accept(sv, NULL, NULL);
+        if(fd < 0) {
             if(errno == EAGAIN || errno == EWOULDBLOCK) {
                 goto pollagain;
             }
             un_log_errno(LOG_ERR, "accept: new connection");
             goto out;
         }
-        struct iobuf *buf = iobuf_createfd(8192, client);
+        struct iobuf *buf = iobuf_createfd(8192, fd);
         struct client *client = client_new();
-        fdmap_setclient(loop, client, buf, client);
-        client_process(client, buf, CLIENT_WRITE);
+        fdmap_setclient(loop, fd, buf, client);
+        rc = client_handshake(client, buf);
+        if(rc == CLIENT_READ) {
+          pollfds_add(loop, fd, POLLIN);
+        } else if(rc == CLIENT_WRITE) {
+          pollfds_add(loop, fd, POLLOUT);
+        }
     }
 
     goto pollagain;

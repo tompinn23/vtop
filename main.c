@@ -2,12 +2,15 @@
 #include "util.h"
 
 #include "vtop.h"
+#include "proto.h"
 
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
 #include <errno.h>
 #include <limits.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 #include <stdio.h>
 
@@ -137,6 +140,17 @@ int sv_open(const char *addr, int maxlisten) {
 
 
 int main(int argc, char **argv) {
+
+    struct scanner s;
+
+    scanner_init(&s, "HELO <vtop.2> \"hello world\" Third", sizeof("HELO <vtop.2> \"hello world\" Third"));
+
+    struct token t;
+    t = scan_token(&s);
+    while(t.type != TOKEN_END) {
+        printf("token: %d %.*s\n", t.type, t.len, t.start);
+        t = scan_token(&s);
+    }
 
     int fd = sv_open("tcp://127.0.0.1:8080", 1);
 
